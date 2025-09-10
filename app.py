@@ -1,4 +1,3 @@
-# app.py
 import os
 from pathlib import Path
 import streamlit as st
@@ -7,113 +6,96 @@ from tensorflow import keras
 from PIL import Image
 import numpy as np
 
-# Optional: use gdown for Google Drive downloads (installed via requirements)
-try:
-    import gdown
-except Exception:
-    gdown = None
-
-MODEL_FILENAME = "best_resnet50.h5"   # local filename we will use
-IMG_SIZE = (224, 224)
-
-st.set_page_config(page_title="Pneumonia Detector", layout="centered")
-
 # ==========================
 # 🔹 Fix for "Unknown layer: Cast"
 # ==========================
 class CastLayer(tf.keras.layers.Layer):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-
     def call(self, inputs):
         return tf.cast(inputs, tf.float32)
 
 # ==========================
-# 🔹 Download helper
+# 🔹 Streamlit config
 # ==========================
-@st.cache_resource
-def download_model_from_gdrive(file_id: str, dest: str):
-    if gdown is None:
-        raise RuntimeError("gdown not installed. Add gdown to requirements or upload model into repo.")
-    url = f"https://drive.google.com/uc?id={file_id}"
-    st.info("Downloading model from Google Drive (first run, may take a minute)...")
-    gdown.download(url, dest, quiet=False)
-    return dest
+st.set_page_config(page_title="Pneumonia Detector (3 Models)", layout="centered")
+st.title("🩺 Pneumonia Detector – Model Comparison")
+st.write("Upload a chest X-ray image to compare predictions from **DenseNet121**, **MobileNetV2**, and **ResNet50**.\
+         \n⚠️ This is for educational purposes only — not medical advice.")
 
 # ==========================
-# 🔹 Load model
+# 🔹 Model files
+# ==========================
+MODEL_FILES = {
+    "DenseNet121": "best_densenet121.h5",
+    "MobileNetV2": "best_mobilenetv2.h5",
+    "ResNet50": "best_resnet50.h5"
+}
+IMG_SIZE = (224, 224)
+
+# ==========================
+# 🔹 Load models (cached)
 # ==========================
 @st.cache_resource
-def load_model():
-    if Path(MODEL_FILENAME).exists():
-        model = keras.models.load_model(
-            MODEL_FILENAME,
-            compile=False,
-            custom_objects={"Cast": CastLayer}  # 👈 Fix applied here
-        )
-        return model
-
-    file_id = os.environ.get("MODEL_GDRIVE_ID") or os.environ.get("MODEL_URL")
-    if file_id:
-        if "drive.google.com" in file_id and gdown is not None:
-            dest = MODEL_FILENAME
-            gdown.download(file_id, dest, quiet=False)
-            model = keras.models.load_model(
-                MODEL_FILENAME,
-                compile=False,
-                custom_objects={"Cast": CastLayer}
+def load_all_models():
+    models = {}
+    for name, filename in MODEL_FILES.items():
+        if Path(filename).exists():
+            models[name] = keras.models.load_model(
+                filename, compile=False, custom_objects={"Cast": CastLayer}
             )
-            return model
-        if gdown is None:
-            raise RuntimeError("Model not found locally and gdown is not installed.")
-        download_model_from_gdrive(file_id, MODEL_FILENAME)
-        model = keras.models.load_model(
-            MODEL_FILENAME,
-            compile=False,
-            custom_objects={"Cast": CastLayer}
-        )
-        return model
+        else:
+            st.error(f"❌ Model file `{filename}` not found.")
+    return models
 
-    raise FileNotFoundError(f"{MODEL_FILENAME} not found locally and MODEL_GDRIVE_ID / MODEL_URL not set.")
-
-# Load model (cached)
 try:
-    model = load_model()
-    st.success("✅ Model loaded successfully!")
+    models = load_all_models()
+    st.success("✅ All models loaded successfully!")
 except Exception as e:
-    st.error(f"Could not load model: {e}")
+    st.error(f"Could not load models: {e}")
     st.stop()
 
 # ==========================
-# 🔹 Streamlit UI
+# 🔹 Preprocess image
 # ==========================
-st.title("🩺 Pneumonia Detector (Chest X-ray)")
-st.write("Upload a chest X-ray image (jpg/png). This demo is for educational purposes only — not medical advice.")
-
-uploaded = st.file_uploader("Upload X-ray image", type=["jpg","jpeg","png"])
-threshold = st.sidebar.slider("Decision threshold (for PNEUMONIA)", 0.1, 0.9, 0.5, 0.01)
-
 def preprocess_image(pil_img: Image.Image):
     img = pil_img.convert("RGB").resize(IMG_SIZE)
     arr = np.array(img).astype("float32") / 255.0
     arr = np.expand_dims(arr, axis=0)
     return arr
 
+# ==========================
+# 🔹 Upload image
+# ==========================
+uploaded = st.file_uploader("Upload X-ray image", type=["jpg","jpeg","png"])
+threshold = st.sidebar.slider("Decision threshold (for PNEUMONIA)", 0.1, 0.9, 0.5, 0.01)
+
 if uploaded is not None:
     img = Image.open(uploaded)
     st.image(img, caption="Uploaded image", use_column_width=True)
     x = preprocess_image(img)
-    with st.spinner("Predicting..."):
-        preds = model.predict(x)
-    prob = float(preds[0][0])
-    label = "PNEUMONIA" if prob >= threshold else "NORMAL"
-    confidence = prob if label == "PNEUMONIA" else 1 - prob
 
-    st.markdown(f"## Result: **{label}**")
-    st.write(f"Confidence: **{confidence:.2f}**")
-    st.caption(f"Raw model sigmoid output (prob for PNEUMONIA): {prob:.4f}")
+    st.markdown("### 🔍 Predictions from all models")
+    results = []
+
+    for name, model in models.items():
+        with st.spinner(f"Predicting with {name}..."):
+            preds = model.predict(x)
+            prob = float(preds[0][0])
+            label = "PNEUMONIA" if prob >= threshold else "NORMAL"
+            confidence = prob if label == "PNEUMONIA" else 1 - prob
+            results.append((name, label, confidence, prob))
+
+    # Display results in a table
+    st.table({
+        "Model": [r[0] for r in results],
+        "Prediction": [r[1] for r in results],
+        "Confidence": [f"{r[2]:.2f}" for r in results],
+        "Raw Prob (Pneumonia)": [f"{r[3]:.4f}" for r in results],
+    })
+
 else:
-    st.info("Upload an X-ray to start.")
+    st.info("📤 Upload an X-ray to start.")
 
 st.markdown("---")
 st.caption("Disclaimer: This model is a demo and not a medical diagnostic tool.")
