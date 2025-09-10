@@ -1,0 +1,4 @@
+best_resnet50.h5
+__pycache__/
+venv/
+*.pyc
